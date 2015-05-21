@@ -1,0 +1,161 @@
+---
+title: "Practical Machine Learning Project"
+author: "Dino Philaretou"
+date: "Monday, May 18, 2015"
+output: html_document
+---
+# Executive Summary
+
+## Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+
+## Data
+
+The training data for this project are available here: 
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here: 
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+## Question
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases. 
+
+# Solution
+
+## Import Data
+
+```{r, echo=TRUE}
+rm(list = ls(all = TRUE))
+# Set working directory path:
+setwd("D:/Coursera/Practical Machine Learning/Project")
+
+# Check if a data folder exists; if not then create one:
+if (!file.exists("data")) {dir.create("data")}
+
+# Setup file URL and destination file:
+FileUrlTraining <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+DestfileTraining <- "./data/pml-training.csv"
+FileUrlTesting <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+DestfileTesting <- "./data/pml-testing.csv"
+
+# Download the files: 
+if(!file.exists(DestfileTraining)) {
+download.file(FileUrlTraining, destfile = DestfileTraining)
+download.file(FileUrlTesting, destfile = DestfileTesting) }
+```
+
+## Setup Environment:
+```{r, echo=TRUE}
+library(caret)
+```
+
+## Clean Data
+After looking at the data it was discovered that there are many variables with NA values and #DIV/0! and spaces or empty values, this is bad data. The following section deals with these data quality problems by removing the columns with any bad data.
+
+```{r, echo=TRUE}
+# Read the csv file for training and replace column values that are empty or have spaces with NA:
+Training <- read.csv("./data/pml-training.csv", header=TRUE, as.is = TRUE, stringsAsFactors = FALSE, sep=',', na.strings= c("NA",""," ",'#DIV/0!'))
+Testing <- read.csv("./data/pml-testing.csv", header=TRUE, as.is = TRUE, stringsAsFactors = FALSE, sep=',', na.strings= c("NA",""," "))
+
+# Change the variable to be predicted to a factor.
+Training$classe <- as.factor(Training$classe) 
+
+# Remove columns with NAs etc, to ensure we use variables with quality data:
+Training_NAs <- apply(Training, 2, function(x) {sum(is.na(x))})
+Training_Clean <- Training[,which(Training_NAs == 0)]
+
+# apply the same treatment to the final testing data
+Testing_NAs <- apply(Testing, 2, function(x) {sum(is.na(x))})
+Testing_Clean <- Testing[,which(Testing_NAs == 0)]
+
+# Remove identifier columns such as name, timestamps etc, first 7 columns:
+Training_Clean <- Training_Clean[8:length(Training_Clean)]
+Testing_Clean <- Testing_Clean[8:length(Testing_Clean)]
+```
+
+## Remove the non zero variables
+I am removing the variables with near zero values because they do not contribute towards  meaningful predictions. There are 53 variables before the removal of any variables with near zero values.
+
+```{r, echo=TRUE}
+# Check for NearZeroVariance Variables:
+NZV_Columns <- nearZeroVar(Training_Clean, saveMetrics=TRUE)
+Training_Clean <- Training_Clean[,NZV_Columns$nzv==FALSE]
+
+NZV_Columns <- nearZeroVar(Testing_Clean, saveMetrics=TRUE)
+Testing_Clean <- Testing_Clean[,NZV_Columns$nzv==FALSE]
+
+# List the useful variables we will use for the model:
+names(Training_Clean)
+```
+
+There are 53 variables after the removal of any variables with near zero values. No variables were removed which means that they are all useful for prediction purposes.
+
+## Preprocessing variables
+The preProcess class can be used for many operations on predictors, including centering and scaling. The function preProcess estimates the required parameters for each operation and predict.preProcess is used to apply them to specific data sets. 
+
+Select the variables  from accelerometers on the belt, forearm, arm, and dumbell as requested in the background of the question. Most of the variables happen to be numeric classes.
+
+```{r, echo=TRUE}
+# Select only those variables that are numeric
+v <- which(lapply(Training_Clean, class) %in% "numeric")
+v
+
+# Apply preprocessing
+preObj <-preProcess(Training_Clean[,v],method=c('knnImpute', 'center', 'scale'))
+TrainingData <- predict(preObj, Training_Clean[,v])
+TrainingData$classe <- Training_Clean$classe
+
+TestingData <-predict(preObj,Testing_Clean[,v])
+names(TrainingData)
+```
+There are 27 numeric variables that were selected for the predictors of the "classe" variable.
+
+## Partition the Training Data
+The training data set was partitioned into training and cross validation sets in a 70:30 ratio in order to train the model and then test it against data it was not specifically fitted to.
+
+```{r, echo=TRUE}
+#Partioning Training data set, Training_Clean, into two data sets, 70% for MyTraining, 30% for cross validation:
+set.seed(1000000)
+inTrain <- createDataPartition(y = TrainingData$classe, p = 0.7, list = FALSE)
+MyTraining <- TrainingData[inTrain, ]
+CrossValidation <- TrainingData[-inTrain, ]
+dim(MyTraining); dim(CrossValidation)
+```
+
+## Train model
+Train the model using random forest because of its high accuracy rate. The model is built on a training set of 28 variables from the initial 160. Cross validation is used for the train control method.
+
+```{r, echo=TRUE}
+FitModel <- train(classe ~., method="rf", data=MyTraining, trControl=trainControl(method='cv'), number=5, allowParallel=TRUE )
+```
+
+## Accuracy of the training and cross validation data sets
+The following code measures the accuracy of training and cross validation data set
+
+### Training data set:
+```{r, echo=TRUE}
+TrainingPrediction <- predict(FitModel, MyTraining)
+confusionMatrix(TrainingPrediction, MyTraining$classe)
+```
+The results indicate that the model is 100% accurate when using the training data set for predictions.
+
+### Cross validation data set:
+```{r, echo=TRUE}
+CrossValPred <- predict(FitModel, CrossValidation)
+confusionMatrix(CrossValPred, CrossValidation$classe)
+```
+The results indicate that the model is 99.35% accurate when using the cross validation data set for predictions.
+
+## Results
+Predictions using the real testing data set
+```{r, echo=TRUE}
+TestingPrediction <- predict(FitModel, TestingData)
+TestingPrediction
+```
+
+## Conclusions
+With the information given from multiple measuring instruments it's possible to accurately predict how well a person performs an excercise using a relatively simple model.
+
